@@ -22,6 +22,11 @@ export interface Habit {
   logs: HabitLog[];
 }
 
+export interface DailyNote {
+  date: string;
+  content: string;
+}
+
 export interface UserStats {
   totalCompletions: number;
   currentStreak: number;

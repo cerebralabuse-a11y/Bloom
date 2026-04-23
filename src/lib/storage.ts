@@ -84,5 +84,44 @@ export const storage = {
       console.error('Error deleting log:', error);
       throw error;
     }
+  },
+
+  getDailyNote: async (date: string): Promise<string> => {
+    const { data, error } = await supabase
+      .from('daily_notes')
+      .select('content')
+      .eq('date', date)
+      .single();
+
+    if (error && error.code !== 'PGRST116') { // PGRST116 is "no rows found"
+      console.error('Error fetching daily note:', error);
+    }
+
+    return data?.content || '';
+  },
+
+  saveDailyNote: async (date: string, content: string) => {
+    const { error } = await supabase
+      .from('daily_notes')
+      .upsert({ date, content, updated_at: new Date().toISOString() });
+
+    if (error) {
+      console.error('Error saving daily note:', error);
+      throw error;
+    }
+  },
+
+  getAllDailyNotes: async (): Promise<DailyNote[]> => {
+    const { data, error } = await supabase
+      .from('daily_notes')
+      .select('*')
+      .order('date', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching all daily notes:', error);
+      return [];
+    }
+
+    return data || [];
   }
 };

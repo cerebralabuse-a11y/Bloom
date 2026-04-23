@@ -22,7 +22,9 @@ import {
   Sun,
   Flame,
   Trophy,
-  Trash2
+  Trash2,
+  Edit2,
+  History
 } from 'lucide-react';
 import { format, startOfToday, eachDayOfInterval, subDays, isSameDay, parseISO } from 'date-fns';
 import {
@@ -37,7 +39,7 @@ import {
   Bar,
   Cell
 } from 'recharts';
-import { Habit, HabitLog } from './types';
+import { Habit, HabitLog, DailyNote } from './types';
 import { storage } from './lib/storage';
 import { cn } from './lib/utils';
 import HabitModal from './components/HabitModal';
@@ -72,18 +74,46 @@ const NavItem = ({ icon: Icon, label, active, onClick }: any) => (
 );
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'habits' | 'analytics'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'habits' | 'analytics' | 'timeline'>('dashboard');
   const [habits, setHabits] = useState<Habit[]>([]);
+  const [allNotes, setAllNotes] = useState<DailyNote[]>([]);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [habitToDelete, setHabitToDelete] = useState<Habit | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [dailyNote, setDailyNote] = useState('');
+  const [isSavingNote, setIsSavingNote] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
     storage.getHabits().then(loaded => {
       setHabits(loaded);
       setIsLoading(false);
     });
+    
+    const todayStr = format(new Date(), 'yyyy-MM-dd');
+    storage.getDailyNote(todayStr).then(content => {
+      setDailyNote(content);
+    });
+
+    storage.getAllDailyNotes().then(notes => {
+      setAllNotes(notes);
+    });
   }, []);
+
+  const handleSaveDailyNote = async (content: string) => {
+    const todayStr = format(new Date(), 'yyyy-MM-dd');
+    setIsSavingNote(true);
+    try {
+      await storage.saveDailyNote(todayStr, content);
+      // Refresh timeline data
+      const notes = await storage.getAllDailyNotes();
+      setAllNotes(notes);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsSavingNote(false);
+    }
+  };
 
   const handleAddHabit = async (newHabit: Habit) => {
     await storage.addHabit(newHabit);
@@ -171,13 +201,19 @@ export default function App() {
             active={activeTab === 'analytics'}
             onClick={() => setActiveTab('analytics')}
           />
+          <NavItem
+            icon={History}
+            label="Timeline"
+            active={activeTab === 'timeline'}
+            onClick={() => setActiveTab('timeline')}
+          />
         </nav>
 
         <div className="mt-auto flex flex-col gap-4">
           <div className="bg-white border-2 border-bento-border p-5 rounded-3xl shadow-bento-sm">
             <p className="text-xs font-black uppercase tracking-wider text-bento-text mb-1 italic">Pro Tip</p>
             <p className="text-xs text-bento-text-soft leading-relaxed font-semibold">
-              Until deaath every failure is mental!
+              Until death every failure is mental!
             </p>
           </div>
         </div>
@@ -211,9 +247,31 @@ export default function App() {
             transition={{ duration: 0.2 }}
             className="h-full"
           >
-            {activeTab === 'dashboard' && <Dashboard habits={habits} weekDays={weekDays} onToggle={handleToggleHabit} onOpenAdd={() => setIsAddModalOpen(true)} />}
-            {activeTab === 'habits' && <HabitsList habits={habits} onDelete={(id) => setHabitToDelete(habits.find(h => h.id === id) || null)} />}
+            {activeTab === 'dashboard' && (
+              <Dashboard 
+                habits={habits} 
+                weekDays={weekDays} 
+                onToggle={handleToggleHabit} 
+                onOpenAdd={() => setIsAddModalOpen(true)}
+                dailyNote={dailyNote}
+                setDailyNote={setDailyNote}
+                isSaving={isSavingNote}
+                onSaveNote={handleSaveDailyNote}
+              />
+            )}
+            {activeTab === 'habits' && (
+              <HabitsList 
+                habits={habits.filter(h => 
+                  h.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                  h.description.toLowerCase().includes(searchTerm.toLowerCase())
+                )} 
+                searchTerm={searchTerm}
+                onSearchChange={setSearchTerm}
+                onDelete={(id) => setHabitToDelete(habits.find(h => h.id === id) || null)} 
+              />
+            )}
             {activeTab === 'analytics' && <Analytics habits={habits} />}
+            {activeTab === 'timeline' && <TimelineView notes={allNotes} />}
           </motion.div>
         </AnimatePresence>
       </main>
@@ -233,8 +291,52 @@ export default function App() {
   );
 }
 
-function Dashboard({ habits, weekDays, onToggle, onOpenAdd }: { habits: Habit[], weekDays: Date[], onToggle: (id: string) => void, onOpenAdd: () => void }) {
+function Dashboard({ 
+  habits, 
+  weekDays, 
+  onToggle, 
+  onOpenAdd,
+  dailyNote,
+  setDailyNote,
+  isSaving,
+  onSaveNote
+}: { 
+  habits: Habit[], 
+  weekDays: Date[], 
+  onToggle: (id: string) => void, 
+  onOpenAdd: () => void,
+  dailyNote: string,
+  setDailyNote: (val: string) => void,
+  isSaving: boolean,
+  onSaveNote: (val: string) => void
+}) {
   const todayStr = format(new Date(), 'yyyy-MM-dd');
+  const [isEditingNote, setIsEditingNote] = useState(!dailyNote);
+
+  // Sync edit mode with content on initial load
+  useEffect(() => {
+    if (dailyNote && isEditingNote) {
+       // Only auto-flip if we just loaded data and it's not empty
+       setIsEditingNote(false);
+    }
+  }, [dailyNote === '']); // Trigger only on first non-empty load
+
+  // Debounce saving removed or kept as secondary, adding explicit save button logic
+  const handleManualSave = () => {
+    if (dailyNote) {
+      onSaveNote(dailyNote);
+      setIsEditingNote(false);
+    }
+  };
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (dailyNote && isEditingNote) {
+        onSaveNote(dailyNote);
+      }
+    }, 5000); // Very long debounce if editing, mostly rely on button now
+    return () => clearTimeout(timer);
+  }, [dailyNote]);
 
   // Calculate weekly completion rate
   const totalCompletions = weekDays.reduce((acc, day) => {
@@ -328,20 +430,59 @@ function Dashboard({ habits, weekDays, onToggle, onOpenAdd }: { habits: Habit[],
         </div>
       </div>
 
-      {/* Alerts/Status (Span 1x2) */}
-      <div className="bento-card col-span-1 row-span-2 bg-pastel-yellow">
-        <h2 className="text-lg font-display font-black uppercase tracking-tight mb-4">Alerts</h2>
-        <div className="space-y-4">
-          <div className="group">
-            <p className="text-xs font-black text-bento-text leading-tight uppercase">Drink Water</p>
-            <p className="text-[11px] font-bold text-bento-text-soft mb-2">Next in 45m</p>
-            <span className="tag bg-white border-bento-border border-[1.5px] px-2 py-0.5 rounded-full text-[9px] font-black uppercase">Health</span>
+      {/* Daily Reflection (Span 2x1) */}
+      <div className="bento-card col-span-2 row-span-1 bg-pastel-yellow flex flex-col">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-display font-black uppercase tracking-tight">Daily Reflection</h2>
+            {!isEditingNote && dailyNote && (
+              <span className="text-[10px] font-black bg-pastel-green px-2 py-0.5 rounded-full border border-bento-border/20 uppercase tracking-wider">Saved</span>
+            )}
           </div>
-          <div className="group">
-            <p className="text-xs font-black text-bento-text leading-tight uppercase">Bedtime</p>
-            <p className="text-[11px] font-bold text-bento-text-soft mb-2">10:00 PM</p>
-            <span className="tag bg-white border-bento-border border-[1.5px] px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest">Routine</span>
+          <div className="flex items-center gap-3">
+            {isSaving && (
+              <span className="text-[10px] font-black uppercase animate-pulse text-bento-text-soft">Saving...</span>
+            )}
+            {isEditingNote ? (
+              <button 
+                onClick={handleManualSave}
+                className="bento-button bg-white text-[10px] py-1 px-3 shadow-bento-sm hover:shadow-none translate-x-[-2px] translate-y-[-2px] active:translate-x-0 active:translate-y-0"
+              >
+                SAVE NOTE
+              </button>
+            ) : (
+              <button 
+                onClick={() => setIsEditingNote(true)}
+                className="w-8 h-8 flex items-center justify-center bg-white border-2 border-bento-border rounded-lg shadow-bento-sm hover:shadow-none translate-x-[-2px] translate-y-[-2px] active:translate-x-0 active:translate-y-0 transition-all"
+              >
+                <Edit2 size={14} strokeWidth={3} />
+              </button>
+            )}
           </div>
+        </div>
+        
+        <div className="relative flex-grow">
+          {isEditingNote ? (
+            <>
+              <textarea
+                value={dailyNote}
+                onChange={(e) => setDailyNote(e.target.value)}
+                placeholder="What did you achieve today? What's the plan for tomorrow?"
+                maxLength={200}
+                className="w-full h-full bg-white/50 border-2 border-bento-border rounded-xl p-3 text-xs font-bold placeholder:text-bento-text-soft/50 focus:bg-white outline-none transition-all resize-none custom-scrollbar"
+                autoFocus
+              />
+              <div className="absolute bottom-3 right-3 text-[9px] font-black uppercase text-bento-text-soft bg-white/80 px-1.5 py-0.5 rounded border border-bento-border/10">
+                {dailyNote.length}/200
+              </div>
+            </>
+          ) : (
+            <div className="w-full h-full p-4 bg-white/30 border-2 border-dashed border-bento-border/20 rounded-xl flex items-center justify-center">
+              <p className="text-sm font-bold text-bento-text italic leading-relaxed text-center max-w-md">
+                {dailyNote || "Click the edit icon to add today's reflection..."}
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -373,14 +514,20 @@ function Dashboard({ habits, weekDays, onToggle, onOpenAdd }: { habits: Habit[],
   );
 }
 
-function HabitsList({ habits, onDelete }: { habits: Habit[], onDelete: (id: string) => void }) {
+function HabitsList({ habits, searchTerm, onSearchChange, onDelete }: { habits: Habit[], searchTerm: string, onSearchChange: (val: string) => void, onDelete: (id: string) => void }) {
   return (
     <div className="bento-card min-h-[500px] bg-white">
       <div className="flex items-center justify-between mb-8">
         <h2 className="text-2xl font-display font-black uppercase tracking-tight">Your Journey</h2>
         <div className="flex items-center gap-3 bg-bento-bg border-2 border-bento-border rounded-xl px-4 py-2">
           <Search size={18} className="text-bento-text-soft" />
-          <input type="text" placeholder="Search habits..." className="bg-transparent border-none outline-none text-xs font-bold w-40 placeholder:text-bento-text-soft" />
+          <input 
+            type="text" 
+            placeholder="Search habits..." 
+            value={searchTerm}
+            onChange={(e) => onSearchChange(e.target.value)}
+            className="bg-transparent border-none outline-none text-xs font-bold w-40 placeholder:text-bento-text-soft" 
+          />
         </div>
       </div>
       <div className="grid grid-cols-2 gap-4">
@@ -438,7 +585,7 @@ function Analytics({ habits }: { habits: Habit[] }) {
   const totalCompletions = chartData.reduce((acc, d) => acc + d.completed, 0);
   const totalPossible = habits.length * last7Days.length;
   const habitScore = totalPossible > 0 ? Math.round((totalCompletions / totalPossible) * 100) : 0;
-  
+
   const previous7Days = eachDayOfInterval({
     start: subDays(new Date(), 13),
     end: subDays(new Date(), 7)
@@ -452,7 +599,7 @@ function Analytics({ habits }: { habits: Habit[] }) {
 
   const lifetimeCompletions = habits.reduce((acc, h) => acc + h.logs.length, 0);
   const currentRank = Math.max(1, 500 - (lifetimeCompletions * 2));
-  
+
   const getRankName = (c: number) => {
     if (c > 500) return "ELITE";
     if (c > 200) return "PRO";
@@ -553,3 +700,79 @@ function Analytics({ habits }: { habits: Habit[] }) {
   );
 }
 
+function TimelineView({ notes }: { notes: DailyNote[] }) {
+  const colors = ['bg-pastel-purple', 'bg-pastel-blue', 'bg-pastel-pink', 'bg-pastel-yellow', 'bg-pastel-green'];
+
+  const container = {
+    hidden: { opacity: 0 },
+    show: {
+      opacity: 1,
+      transition: {
+        staggerChildren: 0.1
+      }
+    }
+  };
+
+  const item = {
+    hidden: { opacity: 0, y: 20, scale: 0.95 },
+    show: { opacity: 1, y: 0, scale: 1, transition: { type: "spring", stiffness: 100 } }
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto py-4">
+      <header className="mb-12">
+        <h2 className="text-4xl font-display font-black uppercase tracking-tighter text-bento-text">Your Journey</h2>
+        <p className="text-bento-text-soft font-bold">Relive your reflections and achievements</p>
+      </header>
+
+      <motion.div 
+        variants={container}
+        initial="hidden"
+        animate="show"
+        className="relative border-l-4 border-bento-border pl-12 space-y-12 pb-20"
+      >
+        {notes.map((note, index) => {
+          const date = parseISO(note.date);
+          const colorClass = colors[index % colors.length];
+
+          return (
+            <motion.div key={note.date} variants={item} className="relative">
+              {/* Dot on timeline */}
+              <div className="absolute -left-[54px] top-6 w-5 h-5 bg-white border-4 border-bento-border rounded-full z-10" />
+              
+              <div className="flex gap-8">
+                <div className="shrink-0 w-20 text-center">
+                  <p className="text-[10px] font-black uppercase text-bento-text-soft mb-1">{format(date, 'MMM')}</p>
+                  <p className="text-3xl font-display font-black leading-none">{format(date, 'dd')}</p>
+                  <p className="text-[10px] font-black uppercase text-bento-text-soft mt-1">{format(date, 'EEE')}</p>
+                </div>
+
+                <div className={cn("bento-card flex-grow shadow-bento group hover:-translate-y-1 transition-transform", colorClass)}>
+                  <p className="text-xl font-black text-bento-text leading-relaxed whitespace-pre-wrap italic">
+                    "{note.content}"
+                  </p>
+                  <div className="mt-4 pt-4 border-t-2 border-bento-border/10 flex justify-between items-center">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-bento-text-soft">Bloom Memory</span>
+                    <div className="w-6 h-6 rounded-full bg-white/50 border border-bento-border/20 flex items-center justify-center">
+                      <Zap size={12} className="text-bento-text" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          );
+        })}
+
+        {notes.length === 0 && (
+          <div className="py-20 text-center">
+            <div className="inline-flex items-center justify-center w-20 h-20 bg-white border-2 border-dashed border-bento-border rounded-3xl mb-6">
+              <History size={40} className="text-bento-text-soft/30" />
+            </div>
+            <h3 className="text-xl font-display font-black uppercase">No memories yet</h3>
+            <p className="text-bento-text-soft font-bold mt-2 text-sm">Complete your daily reflection to start your timeline!</p>
+          </div>
+        )}
+      </motion.div>
+    </div>
+  );
+}
